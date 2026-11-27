@@ -123,7 +123,23 @@ let strings: [String: (String, String)] = [
     "menu_export": ("Ekspor cheatsheet...", "Export cheatsheets..."),
     "menu_import": ("Impor cheatsheet...", "Import cheatsheets..."),
     "menu_open": ("Buka folder data", "Open data folder"),
-    "menu_quit": ("Keluar", "Quit")
+    "menu_quit": ("Keluar", "Quit"),
+    "sec_backup": ("Backup iCloud", "iCloud backup"),
+    "backup_desc": ("Salinan otomatis ke iCloud Drive, terpisah dari data harian di Mac ini. Menyimpan 5 backup terakhir.",
+                     "Automatic copies to iCloud Drive, separate from the daily data on this Mac. Keeps the last 5 backups."),
+    "backup_off": ("Nonaktif", "Off"),
+    "backup_daily": ("Harian", "Daily"),
+    "backup_weekly": ("Mingguan", "Weekly"),
+    "backup_now": ("Backup sekarang", "Back up now"),
+    "backup_restore": ("Pulihkan...", "Restore..."),
+    "backup_unavailable": ("iCloud Drive tidak ditemukan. Aktifkan di System Settings > Apple ID > iCloud Drive.",
+                           "iCloud Drive not found. Turn it on in System Settings > Apple ID > iCloud Drive."),
+    "backup_ok": ("Backup tersimpan di iCloud.", "Backup saved to iCloud."),
+    "backup_fail": ("Backup gagal: ", "Backup failed: "),
+    "backup_last": ("Terakhir: %@", "Last: %@"),
+    "backup_none": ("Belum ada backup.", "No backups yet."),
+    "backup_pick_title": ("Pilih backup untuk dipulihkan", "Choose a backup to restore"),
+    "backup_restore_q": ("Pulihkan dari %@?", "Restore from %@?")
 ]
 
 func t(_ key: String) -> String {
@@ -138,6 +154,26 @@ func t(_ key: String, _ arg: Any) -> String {
 
 // MARK: - Settings
 
+enum BackupInterval: String, CaseIterable, Identifiable {
+    case off, daily, weekly
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .off: return t("backup_off")
+        case .daily: return t("backup_daily")
+        case .weekly: return t("backup_weekly")
+        }
+    }
+    /// nil berarti tidak pernah otomatis
+    var seconds: TimeInterval? {
+        switch self {
+        case .off: return nil
+        case .daily: return 86_400
+        case .weekly: return 7 * 86_400
+        }
+    }
+}
+
 final class Settings: ObservableObject {
     static let shared = Settings()
     private let d = UserDefaults.standard
@@ -149,6 +185,8 @@ final class Settings: ObservableObject {
     @Published var hideMenuIcon: Bool { didSet { d.set(hideMenuIcon, forKey: "hideMenuIcon") } }
     @Published var language: Lang { didSet { d.set(language.rawValue, forKey: "language") } }
     @Published var placeholderRules: String { didSet { d.set(placeholderRules, forKey: "placeholderRules") } }
+    @Published var backupInterval: BackupInterval { didSet { d.set(backupInterval.rawValue, forKey: "backupInterval") } }
+    @Published var lastBackupAt: Date? { didSet { d.set(lastBackupAt, forKey: "lastBackupAt") } }
 
     init() {
         hotkeyCode = d.object(forKey: "hotkeyCode") as? Int ?? kVK_Space
@@ -158,6 +196,8 @@ final class Settings: ObservableObject {
         hideMenuIcon = d.object(forKey: "hideMenuIcon") as? Bool ?? false
         language = Lang(rawValue: d.string(forKey: "language") ?? "") ?? .idn
         placeholderRules = d.string(forKey: "placeholderRules") ?? "namespace = default, kube-system"
+        backupInterval = BackupInterval(rawValue: d.string(forKey: "backupInterval") ?? "") ?? .daily
+        lastBackupAt = d.object(forKey: "lastBackupAt") as? Date
     }
 
     func resetHotkey() {
@@ -915,6 +955,79 @@ final class Store: ObservableObject {
         n("kubernetes", "Contoh Deployment YAML", deployYAML, "Contoh cheatsheet dengan highlight YAML", lang: "yaml"),
         n("python", "HTTP request dengan requests", "import requests\n\nr = requests.get(\"https://example.com\", timeout=5)\nprint(r.status_code)  # cek status", lang: "python")
     ]
+}
+
+// MARK: - Backup iCloud
+
+/// Salinan read/write di iCloud Drive, terpisah dari data harian (yang tetap di Application Support).
+/// Dipakai hanya untuk backup manual/otomatis dan restore; bukan lokasi baca/tulis sehari-hari.
+enum BackupManager {
+    static var dir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/CheatSheet/Backups", isDirectory: true)
+    }
+
+    static var isAvailable: Bool {
+        FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs").path)
+    }
+
+    private static let df: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
+
+    private static let fileDf: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f
+    }()
+
+    struct Entry: Identifiable {
+        var id: URL { url }
+        let url: URL
+        let date: Date
+        var label: String { df.string(from: date) }
+    }
+
+    static func list() -> [Entry] {
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+        return items
+            .filter { $0.pathExtension == "json" }
+            .compactMap { url -> Entry? in
+                guard let v = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+                      let date = v.contentModificationDate else { return nil }
+                return Entry(url: url, date: date)
+            }
+            .sorted { $0.date > $1.date }
+    }
+
+    /// Menulis backup baru dan menyisakan 5 terbaru. Melempar error kalau iCloud Drive tidak ada.
+    @discardableResult
+    static func backupNow(_ store: Store) throws -> Entry {
+        guard isAvailable else {
+            throw NSError(domain: "CheatSheet", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: t("backup_unavailable")])
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("cheatsheet-\(fileDf.string(from: Date())).json")
+        try Store.encode(store.notes).write(to: url, options: .atomic)
+        let keep = 5
+        let all = list()
+        for stale in all.dropFirst(keep) {
+            try? FileManager.default.removeItem(at: stale.url)
+        }
+        return Entry(url: url, date: Date())
+    }
+
+    static func notes(at url: URL) -> [Note]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return Store.decode(data)
+    }
 }
 
 // MARK: - App state
@@ -2275,6 +2388,8 @@ struct SettingsView: View {
     @State private var monitor: Any?
     @State private var loginEnabled = SMAppService.mainApp.status == .enabled
     @State private var info: String?
+    @State private var showRestorePicker = false
+    @State private var backupError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2293,6 +2408,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     dataSection
+                    backupSection
                     suggestSection
                     hotkeySection
                     generalSection
@@ -2328,6 +2444,54 @@ struct SettingsView: View {
             }
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    var backupSection: some View {
+        GroupBox(label: Text(t("sec_backup")).font(.subheadline.bold())) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(t("backup_desc")).font(.system(size: 11)).foregroundStyle(.secondary)
+                Picker(t("sec_backup"), selection: $settings.backupInterval) {
+                    ForEach(BackupInterval.allCases) { opt in
+                        Text(opt.label).tag(opt)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 280)
+                HStack {
+                    Button(t("backup_now")) { runBackup() }
+                    Button(t("backup_restore")) { showRestorePicker = true }
+                    Spacer()
+                }
+                .disabled(store.isLoading)
+                if let last = settings.lastBackupAt {
+                    Text(t("backup_last", DateFormatter.localizedString(from: last, dateStyle: .medium, timeStyle: .short)))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                if let e = backupError {
+                    Text(e).font(.system(size: 11)).foregroundStyle(.red)
+                }
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .sheet(isPresented: $showRestorePicker) {
+            RestorePickerView(store: store, onDone: { msg in
+                showRestorePicker = false
+                info = msg
+            })
+        }
+    }
+
+    func runBackup() {
+        backupError = nil
+        do {
+            try BackupManager.backupNow(store)
+            settings.lastBackupAt = Date()
+            info = t("backup_ok")
+        } catch {
+            backupError = t("backup_fail") + error.localizedDescription
         }
     }
 
@@ -2441,6 +2605,53 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Restore dari backup iCloud
+
+struct RestorePickerView: View {
+    @ObservedObject var store: Store
+    var onDone: (String?) -> Void
+    @State private var entries: [BackupManager.Entry] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(t("backup_pick_title")).font(.headline).padding(14)
+            Divider()
+            if entries.isEmpty {
+                Text(t("backup_none")).font(.system(size: 12)).foregroundStyle(.secondary).padding(14)
+            } else {
+                List(entries) { e in
+                    Button(e.label) { restore(e) }
+                        .buttonStyle(.plain)
+                }
+            }
+            Divider()
+            HStack {
+                Spacer()
+                Button(t("cancel")) { onDone(nil) }.keyboardShortcut(.cancelAction)
+            }
+            .padding(10)
+        }
+        .frame(width: 320, height: 260)
+        .onAppear { entries = BackupManager.list() }
+    }
+
+    func restore(_ e: BackupManager.Entry) {
+        guard let incoming = BackupManager.notes(at: e.url) else { return }
+        let a = NSAlert()
+        a.messageText = t("backup_restore_q", e.label)
+        a.informativeText = t("import_q_desc")
+        a.addButton(withTitle: t("merge"))
+        a.addButton(withTitle: t("replace"))
+        a.addButton(withTitle: t("cancel"))
+        switch a.runModal() {
+        case .alertFirstButtonReturn: store.importNotes(incoming, replace: false)
+        case .alertSecondButtonReturn: store.importNotes(incoming, replace: true)
+        default: return
+        }
+        onDone(t("import_ok").replacingOccurrences(of: "%d", with: "\(incoming.count)"))
+    }
+}
+
 // MARK: - Ekspor / impor file
 
 enum DataTransfer {
@@ -2508,6 +2719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var panel: FloatingPanel!
     var statusItem: NSStatusItem!
     var bag = Set<AnyCancellable>()
+    var backupTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -2516,6 +2728,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         buildStatusItem()
         HotKeyCenter.shared.handler = { [weak self] in self?.toggle() }
         bind()
+        scheduleAutoBackup()
 
         // Kalau baru login (boot kurang dari 3 menit) dan open at login aktif, mulai tersembunyi
         let justBooted = ProcessInfo.processInfo.systemUptime < 180
@@ -2526,6 +2739,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         store.flush()
+    }
+
+    /// Cek tiap jam apakah backup otomatis sudah jatuh tempo (dipanggil juga langsung saat launch).
+    func scheduleAutoBackup() {
+        checkAutoBackup()
+        backupTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.checkAutoBackup()
+        }
+    }
+
+    func checkAutoBackup() {
+        guard let interval = settings.backupInterval.seconds else { return }
+        guard !store.isLoading else { return }
+        if let last = settings.lastBackupAt, Date().timeIntervalSince(last) < interval { return }
+        do {
+            try BackupManager.backupNow(store)
+            settings.lastBackupAt = Date()
+        } catch {
+            NSLog("CheatSheet auto backup failed: \(error)")
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
