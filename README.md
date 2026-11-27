@@ -4,8 +4,6 @@ A small macOS menu bar app for command snippets. Hit a hotkey, search, fill in a
 
 > Bahasa Indonesia: see [README.id.md](README.id.md).
 
-This is a fork of [ahmadazharrivaldy/CheatSheet](https://github.com/ahmadazharrivaldy/CheatSheet). All credit for the original idea and codebase goes there; this fork adds the changes described below.
-
 ## What it does
 
 - Lives in the menu bar, opens with a global hotkey (default `⌃⌥Space`)
@@ -28,9 +26,9 @@ This builds and ad-hoc code-signs `CheatSheet.app` in the project folder. Move i
 
 ## Data and backup
 
-Day-to-day data lives locally in `~/Library/Application Support/CheatSheet/cheatsheet.json`. That part hasn't changed from the original.
+Day-to-day data lives locally in `~/Library/Application Support/CheatSheet/cheatsheet.json`.
 
-On top of it, this fork adds an optional backup layer to iCloud Drive, separate from the local file:
+On top of it, there's an optional backup layer to iCloud Drive, separate from the local file:
 
 - Settings → iCloud backup: choose Off, Daily, or Weekly, or just hit "Back up now"
 - Backups land in `~/Library/Mobile Documents/com~apple~CloudDocs/CheatSheet/Backups/`, last 5 kept
@@ -41,6 +39,10 @@ On top of it, this fork adds an optional backup layer to iCloud Drive, separate 
 
 Pushing a tag like `v1.1` triggers the GitHub Actions workflow, which builds the app on a macOS runner and attaches the zipped `.app` to a GitHub Release.
 
+## Contributing
+
+Issues and PRs welcome.
+
 ## License
 
-MIT, same as the original. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

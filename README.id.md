@@ -4,8 +4,6 @@ Aplikasi menu bar kecil di macOS untuk command yang sering dipakai. Pencet hotke
 
 > English: lihat [README.md](README.md).
 
-Repo ini adalah fork dari [ahmadazharrivaldy/CheatSheet](https://github.com/ahmadazharrivaldy/CheatSheet). Ide dan kode dasarnya dari sana; fork ini menambahkan perubahan yang dijelaskan di bawah.
-
 ## Fitur
 
 - Tinggal di menu bar, buka dengan hotkey global (default `⌃⌥Space`)
@@ -28,9 +26,9 @@ Perintah ini build dan ad-hoc code-sign `CheatSheet.app` di folder project. Pind
 
 ## Data dan backup
 
-Data harian tetap disimpan lokal di `~/Library/Application Support/CheatSheet/cheatsheet.json`, sama seperti versi aslinya, tidak diubah.
+Data harian tetap disimpan lokal di `~/Library/Application Support/CheatSheet/cheatsheet.json`.
 
-Di atas itu, fork ini menambahkan lapisan backup opsional ke iCloud Drive, terpisah dari file lokal:
+Di atas itu, ada lapisan backup opsional ke iCloud Drive, terpisah dari file lokal:
 
 - Settings → Backup iCloud: pilih Nonaktif, Harian, atau Mingguan, atau langsung klik "Backup sekarang"
 - Backup disimpan di `~/Library/Mobile Documents/com~apple~CloudDocs/CheatSheet/Backups/`, 5 terakhir yang disimpan
@@ -43,4 +41,4 @@ Push tag seperti `v1.1` memicu GitHub Actions, yang build aplikasi di runner mac
 
 ## Lisensi
 
-MIT, sama seperti aslinya. Lihat [LICENSE](LICENSE).
+MIT. Lihat [LICENSE](LICENSE).
